@@ -38,9 +38,10 @@ def apply_kernel(img, kernel, noise=10):
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--image_path', required=True)
-parser.add_argument('--output_path', default='result.png')
-parser.add_argument('--angle', required=True)
-parser.add_argument('--distance', required=True)
+parser.add_argument('--output_path', default='result_800_l10_w10.png')
+parser.add_argument('--kernel_path')
+parser.add_argument('--angle')
+parser.add_argument('--distance')
 parser.add_argument('--sz', default=65)
 parser.add_argument('--snr', default=10)
 if __name__ == '__main__':
@@ -51,8 +52,12 @@ if __name__ == '__main__':
 
     img = cv2.dft(img, flags=cv2.DFT_COMPLEX_OUTPUT)
 
-    angle_in_radians = np.deg2rad(float(args.angle))
-    kernel = motion_kernel(angle_in_radians, args.distance, args.sz)
+    if args.kernel_path:
+        kernel = cv2.imread(args.kernel_path, 0)
+        kernel = np.float32(kernel)
+    else:
+        angle_in_radians = np.deg2rad(float(args.angle))
+        kernel = motion_kernel(angle_in_radians, args.distance, args.sz)
 
     res = apply_kernel(img, kernel, noise=int(args.snr))
     cv2.imwrite(args.output_path, res * 255)

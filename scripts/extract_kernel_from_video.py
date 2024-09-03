@@ -8,7 +8,6 @@ def estimate_motion(prev_image, image):
   prev_image_gray = cv2.cvtColor(prev_image, cv2.COLOR_BGR2GRAY)
 
   flow = cv2.calcOpticalFlowFarneback(prev_image_gray, image_gray, None ,0.1,3,3,31,15,1,cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
-
   magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1])
 
   mean_angle = np.mean(angle)
@@ -48,7 +47,7 @@ def motion_kernel(angle, d, sz=65):
     return kern
 
 
-def find_kernel_by_frames(frames):
+def find_kernel_by_frames_mean(frames):
     combined_angle = 0
     combined_distance = 0
 
@@ -66,11 +65,50 @@ def find_kernel_by_frames(frames):
     return kernel, avg_angle, avg_distance
 
 
+def find_kernel_by_frames(frames, kernel_length=3, kernel_width=1):
+    trajectory_x = []
+    trajectory_y = []
+    for i in range(1, len(frames)):
+        image_gray = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY)
+        prev_image_gray = cv2.cvtColor(frames[i-1], cv2.COLOR_BGR2GRAY)
+        flow = cv2.calcOpticalFlowFarneback(prev_image_gray, image_gray, None ,0.1,3,3,31,15,1,cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
+
+        avg_flow_x = np.mean(flow[:, :, 0])
+        avg_flow_y = np.mean(flow[:, :, 1])
+
+        trajectory_x.append(avg_flow_x)
+        trajectory_y.append(avg_flow_y)
+
+    trajectory_image = np.zeros((800, 800), dtype=np.float32)
+
+    trajectory_length = kernel_length
+    trajectory_x_center = int(trajectory_image.shape[1] / 2)
+    trajectory_y_center = int(trajectory_image.shape[0] / 2)
+    
+    prev_x = trajectory_x_center
+    prev_y = trajectory_y_center
+    for i in range(len(trajectory_x)):
+        next_x = int(prev_x + trajectory_x[i] * trajectory_length)
+        next_y = int(prev_y + trajectory_y[i] * trajectory_length)
+
+        l = ((trajectory_x[i] * trajectory_length) ** 2 + (trajectory_y[i] * trajectory_length) ** 2) ** 0.5
+        clr = 1.0 / l
+
+        cv2.line(trajectory_image, (prev_x, prev_y), (next_x, next_y), (clr), kernel_width)
+        prev_x = next_x
+        prev_y = next_y
+
+    cv2.imwrite('kernel_800_l10_w100.png', trajectory_image * 1500.0)
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--video_path', required=True)
 parser.add_argument('--start_time', required=True)
 parser.add_argument('--end_time', required=True)
 parser.add_argument('--exp_time', required=True)
+parser.add_argument('--kernel_width', default=100)
+parser.add_argument('--kernel_length', default=10)
+parser.add_argument('--mode')
 if __name__ == '__main__':
     args = parser.parse_args()
 
@@ -87,7 +125,10 @@ if __name__ == '__main__':
     end_frame_time = start_frame_time + int(args.exp_time)
 
     selected_frames = extract_frames(cap, start_frame_time, end_frame_time)
-    blur_kernel, avg_angle, avg_distance = find_kernel_by_frames(selected_frames)
 
-    print(f'Angle: {avg_angle}')
-    print(f'Distance: {avg_distance}')
+    if args.mode == 'mean':
+        kernel, avg_angle, avg_distance = find_kernel_by_frames_mean(selected_frames)
+        print(f'Angle: {avg_angle}')
+        print(f'Distance: {avg_distance}')
+    else:
+        find_kernel_by_frames(selected_frames, args.kernel_length, args.kernel_width)

@@ -38,7 +38,7 @@ def apply_kernel(img, kernel, noise=10):
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--image_path', required=True)
-parser.add_argument('--output_path', default='result_800_l10_w10.png')
+parser.add_argument('--output_path', default='result.png')
 parser.add_argument('--kernel_path')
 parser.add_argument('--angle')
 parser.add_argument('--distance')

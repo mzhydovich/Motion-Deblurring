@@ -1,6 +1,7 @@
 import argparse
 import cv2
 import numpy as np
+from scipy.signal import correlate2d
 from datetime import datetime, timedelta
 
 def estimate_motion(prev_image, image):
@@ -101,13 +102,50 @@ def find_kernel_by_frames(frames, kernel_length=3, kernel_width=1):
     cv2.imwrite('kernel_800_l10_w100.png', trajectory_image * 1500.0)
 
 
+def find_kernel_by_frames_corr(frames, kernel_length=1, kernel_width=1):
+    trajectory_x = []
+    trajectory_y = []
+    for i in range(1, len(frames)):
+        image_gray = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY)
+        prev_image_gray = cv2.cvtColor(frames[i-1], cv2.COLOR_BGR2GRAY)
+        cr2d = correlate2d(image_gray[450:550, 450:550], prev_image_gray[450:550, 450:550])
+        coords = np.unravel_index(np.argmax(cr2d, axis=None), cr2d.shape)
+
+        avg_flow_x = coords[1]
+        avg_flow_y = coords[0]
+
+        trajectory_x.append(avg_flow_x)
+        trajectory_y.append(avg_flow_y)
+    
+    trajectory_image = np.zeros((frames[0].shape[0], frames[1].shape[1]), dtype=np.float32)
+
+    trajectory_length = kernel_length
+    trajectory_x_center = int(trajectory_image.shape[1] / 4)
+    trajectory_y_center = int(trajectory_image.shape[0] / 2)
+    
+    prev_x = trajectory_x_center
+    prev_y = trajectory_y_center
+    for i in range(len(trajectory_x)):
+        next_x = int(prev_x + trajectory_x[i] / 8 * trajectory_length)
+        next_y = int(prev_y + trajectory_y[i] * trajectory_length)
+
+        l = ((trajectory_x[i] * trajectory_length) ** 2 + (trajectory_y[i] * trajectory_length) ** 2) ** 0.5
+        clr = 1.0 / l
+
+        cv2.line(trajectory_image, (prev_x, prev_y), (next_x, next_y), (clr), kernel_width)
+        prev_x = next_x
+        prev_y = next_y
+    
+    return trajectory_image
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--video_path', required=True)
-parser.add_argument('--start_time', required=True)
-parser.add_argument('--end_time', required=True)
+parser.add_argument('--image_time', required=True)
+parser.add_argument('--end_video_time', required=True)
 parser.add_argument('--exp_time', required=True)
-parser.add_argument('--kernel_width', default=100)
-parser.add_argument('--kernel_length', default=10)
+parser.add_argument('--kernel_width', default=1)
+parser.add_argument('--kernel_length', default=1)
 parser.add_argument('--mode')
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -117,8 +155,8 @@ if __name__ == '__main__':
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = frame_count/fps
 
-    image_time = datetime.strptime(args.start_time, "%H:%M:%S")
-    video_end_time = datetime.strptime(args.end_time, "%H:%M:%S")
+    image_time = datetime.strptime(args.image_time, "%H:%M:%S.%f")
+    video_end_time = datetime.strptime(args.end_video_time, "%H:%M:%S.%f")
     video_start_time = (video_end_time - timedelta(seconds=duration))
 
     start_frame_time = (image_time - video_start_time).total_seconds()
@@ -131,4 +169,6 @@ if __name__ == '__main__':
         print(f'Angle: {avg_angle}')
         print(f'Distance: {avg_distance}')
     else:
-        find_kernel_by_frames(selected_frames, args.kernel_length, args.kernel_width)
+        kernel = find_kernel_by_frames_corr(selected_frames, args.kernel_length, args.kernel_width)
+
+    cv2.imwrite('kernel.png', kernel * 1500.0)

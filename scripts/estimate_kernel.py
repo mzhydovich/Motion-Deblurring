@@ -3,20 +3,45 @@ import cv2
 import numpy as np
 
 
-def estimate_motion(prev_image, image):
-  image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-  prev_image_gray = cv2.cvtColor(prev_image, cv2.COLOR_BGR2GRAY)
+def find_similar_blocks(img1, img2, block_size=100, w_size = 120):
+    h1, w1 = img1.shape[:2]
+    h2, w2 = img2.shape[:2]
 
-  flow = cv2.calcOpticalFlowFarneback(prev_image_gray, image_gray, None ,0.1,3,3,31,15,1,cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
+    # Проверяем, что размер блока не превышает размер изображений
+    if block_size*2 > min(h1, w1, h2, w2):
+        raise ValueError("Размер блока не должен превышать размер изображений")
 
-  magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+    # Вычисляем координаты центрального блока в img1
+    center_x = w1 // 2
+    center_y = h1 // 2
+    center_block = img1[center_y-block_size:center_y+block_size, center_x-block_size:center_x+block_size]
 
-  mean_angle = np.mean(angle)
-  mean_magnitude = np.mean(magnitude)
+    # Вычисляем координаты центральной области в img2
+    center_x2 = w2 // 2
+    center_y2 = h2 // 2
+    start_x2 = center_x2 - w_size
+    start_y2 = center_y2 - w_size
+    end_x2 = center_x2 + w_size
+    end_y2 = center_y2 + w_size
+    center_region = img2[start_y2:end_y2, start_x2:end_x2]
 
-  angle_degrees = (mean_angle * 180) / np.pi
+    # Находим наиболее похожий блок в center_region
+    min_diff = -2
+    #best_offset = (0, 0)
+    for y2 in range(block_size, center_region.shape[0] - block_size + 1, 1):
+        for x2 in range(block_size, center_region.shape[1] - block_size + 1, 1):
+            block2 = center_region[y2-block_size:y2+block_size, x2-block_size:x2+block_size]
+            corr = np.corrcoef(center_block.flatten(), block2.flatten())[0, 1]
+            #print(corr)
+            if corr > min_diff:
+                min_diff = corr
+                best_offset = (x2 - center_x + start_x2, y2 - center_y + start_y2)
 
-  return angle_degrees, mean_magnitude
+    return [best_offset]
+
+
+
+
 
 
 parser = argparse.ArgumentParser()
@@ -27,8 +52,5 @@ if __name__ == '__main__':
 
     prev_image = cv2.imread(args.prev_image_path)
     image = cv2.imread(args.image_path)
-
-    angle_degrees, distance = estimate_motion(prev_image, image)
-
-    print(f'Angle: {angle_degrees}')
-    print(f'Distance: {distance}')
+    coords = find_similar_blocks(prev_image, image)
+    print(coords)

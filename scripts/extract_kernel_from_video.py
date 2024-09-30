@@ -56,14 +56,14 @@ def extract_frames(video_capture, start_time, end_time):
 
     return frames
 
-def kernel_points(frames):
+def kernel_points(frames, period, block_size, win_size):
     first = frames[0]
     first = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
     coords = []
-    for i in range(4, len(frames), 10):
+    for i in range(1, len(frames), period):
         frame = frames[i]
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        coords.append(find_similar_blocks(first, frame, 100, 150))
+        coords.append(find_similar_blocks(first, frame, block_size, win_size))
         first = frame
     return coords
 
@@ -84,7 +84,7 @@ def mat_sum(array_of_matrix):
     return sum_matrix
 
 
-def draw_line(matr, x = (1, 9), y = (8, 2), width = 1):
+def draw_line(matr, x, y, width = 1):
     cv2.line(matr, x, y, 255, width, lineType=cv2.LINE_AA)
     return matr
 
@@ -93,8 +93,8 @@ def draw_coordinates(image_array,center_x, center_y, a, width):
     count_iter = 0
     for shift in a:
         x, y = shift[0]
-        end_x = center_x + x
-        end_y = center_y + y
+        end_x = center_x + (x*2 + 1)
+        end_y = center_y + (y*2)
         x1 = (center_x, center_y)
         y1 = (end_x, end_y)
         image_array[count_iter] = draw_line(image_array[count_iter], x1, y1, width)
@@ -111,6 +111,9 @@ parser.add_argument('--image_time', required=True)
 parser.add_argument('--end_video_time', required=True)
 parser.add_argument('--exp_time', required=True)
 parser.add_argument('--kernel_size', required=True)
+parser.add_argument('--period', default = 4)
+parser.add_argument('--block_size', default = 100)
+parser.add_argument('--win_size', default = 150)
 parser.add_argument('--kernel_width', default=1)
 if __name__ == '__main__':
 
@@ -129,7 +132,8 @@ if __name__ == '__main__':
     end_frame_time = start_frame_time + float(args.exp_time)
 
     selected_frames = extract_frames(cap, start_frame_time, end_frame_time)
-    coords = kernel_points(selected_frames)
+    coords = kernel_points(selected_frames, int(args.period),
+                           int(args.block_size), int(args.win_size))
     kernel_size = int(args.kernel_size)
     array_of_matrix = np.zeros((len(coords), kernel_size, kernel_size), dtype=np.uint8)
     k = draw_coordinates(array_of_matrix, kernel_size // 2, kernel_size // 2, coords, int(args.kernel_width))

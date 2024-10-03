@@ -1,9 +1,21 @@
 import argparse
 import cv2
 import numpy as np
+from numpy.typing import NDArray
 
 
-def motion_kernel(angle, d, sz=65):
+def motion_kernel(angle: float, d: int, sz: int = 65) -> NDArray[np.float32]:
+    """
+    Generates a motion blur kernel.
+    
+    Args:
+        angle (float): The angle of motion in radians.
+        d (int): The distance of motion.
+        sz (int): Size of the kernel matrix.
+
+    Returns:
+        NDArray[np.float32]: The motion blur kernel.
+    """
     d = int(d)
     sz = int(sz)
     kern = np.ones((1, d), np.float32)
@@ -15,7 +27,18 @@ def motion_kernel(angle, d, sz=65):
     return kern
 
 
-def apply_kernel(img, kernel, noise=10):
+def apply_kernel(img: NDArray[np.float32], kernel: NDArray[np.float32], noise: int = 10) -> NDArray[np.float32]:
+    """
+    Applies a specified kernel to an image with optional noise.
+    
+    Args:
+        img (NDArray[np.float32]): The input image in frequency domain.
+        kernel (NDArray[np.float32]): The kernel to apply.
+        noise (int): Signal-to-noise ratio.
+
+    Returns:
+        NDArray[np.float32]: The processed image.
+    """
     noise = 10 ** (-0.1 * noise)
     kernel /= kernel.sum()
 
@@ -30,21 +53,21 @@ def apply_kernel(img, kernel, noise=10):
     
     res = cv2.idft(RES, flags=cv2.DFT_SCALE | cv2.DFT_REAL_OUTPUT)
 
-    res = np.roll(res, -kh // 2, 0)
-    res = np.roll(res, -kw // 2, 1)
+    res = np.roll(res, -kh // 2, axis=0)
+    res = np.roll(res, -kw // 2, axis=1)
 
     return res
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--image_path', required=True)
-parser.add_argument('--output_path', default='result.png')
-parser.add_argument('--kernel_path')
-parser.add_argument('--angle')
-parser.add_argument('--distance')
-parser.add_argument('--sz', default=65)
-parser.add_argument('--snr', default=10)
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--image_path', required=True)
+    parser.add_argument('--output_path', default='result.png')
+    parser.add_argument('--kernel_path')
+    parser.add_argument('--angle', type=float)
+    parser.add_argument('--distance', type=int)
+    parser.add_argument('--sz', type=int, default=65)
+    parser.add_argument('--snr', type=int, default=10)
     args = parser.parse_args()
 
     img = cv2.imread(args.image_path, 0)
@@ -56,8 +79,8 @@ if __name__ == '__main__':
         kernel = cv2.imread(args.kernel_path, 0)
         kernel = np.float32(kernel)
     else:
-        angle_in_radians = np.deg2rad(float(args.angle))
+        angle_in_radians = np.deg2rad(args.angle)
         kernel = motion_kernel(angle_in_radians, args.distance, args.sz)
 
-    res = apply_kernel(img, kernel, noise=int(args.snr))
+    res = apply_kernel(img, kernel, noise=args.snr)
     cv2.imwrite(args.output_path, res * 255)

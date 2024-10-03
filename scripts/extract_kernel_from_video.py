@@ -1,27 +1,67 @@
 import argparse
 import cv2
 import numpy as np
-from scipy.signal import correlate2d
 from datetime import datetime, timedelta
-
-def estimate_motion(prev_image, image):
-  image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-  prev_image_gray = cv2.cvtColor(prev_image, cv2.COLOR_BGR2GRAY)
-
-  flow = cv2.calcOpticalFlowFarneback(prev_image_gray, image_gray, None ,0.1,3,3,31,15,1,cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
-  magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-
-  mean_angle = np.mean(angle)
-  mean_magnitude = np.mean(magnitude)
-
-  angle_degrees = (mean_angle * 180) / np.pi
-
-  return angle_degrees, mean_magnitude
+from numpy.typing import NDArray
+from typing import List, Tuple
 
 
-def extract_frames(video_capture, start_time, end_time):
+def find_similar_blocks(img1: NDArray[np.uint8], img2: NDArray[np.uint8], block_size: int = 100, w_size: int = 120) -> List[Tuple[int, int]]:
+    """
+    Finds similar blocks between two images.
+
+    Args:
+        img1 (NDArray[np.uint8]): The first image.
+        img2 (NDArray[np.uint8]): The second image.
+        block_size (int): The size of the block to compare.
+        w_size (int): The width of the search window.
+
+    Returns:
+        List[Tuple[int, int]]: The offset of the best matching block in (x, y) coordinates.
+    """
+    h1, w1 = img1.shape[:2]
+    h2, w2 = img2.shape[:2]
+
+    if block_size * 2 > min(h1, w1, h2, w2):
+        raise ValueError("Block size must not exceed image size")
+
+    center_x = w1 // 2
+    center_y = h1 // 2
+    center_block = img1[center_y-block_size:center_y+block_size, center_x-block_size:center_x+block_size]
+
+    center_x2 = w2 // 2
+    center_y2 = h2 // 2
+    start_x2, start_y2 = center_x2 - w_size, center_y2 - w_size
+    end_x2, end_y2 = center_x2 + w_size, center_y2 + w_size
+    center_region = img2[start_y2:end_y2, start_x2:end_x2]
+
+    min_diff = -2
+    best_offset = (0, 0)
+    for y2 in range(block_size, center_region.shape[0] - block_size + 1):
+        for x2 in range(block_size, center_region.shape[1] - block_size + 1):
+            block2 = center_region[y2-block_size:y2+block_size, x2-block_size:x2+block_size]
+            corr = np.corrcoef(center_block.flatten(), block2.flatten())[0, 1]
+            if corr > min_diff:
+                min_diff = corr
+                best_offset = (x2 - center_x + start_x2, y2 - center_y + start_y2)
+
+    return [best_offset]
+
+
+def extract_frames(video_capture: cv2.VideoCapture, start_time: float, end_time: float) -> List[NDArray[np.uint8]]:
+    """
+    Extracts frames from a video within a specific time range.
+
+    Args:
+        video_capture (cv2.VideoCapture): The video capture object.
+        start_time (float): Start time in seconds.
+        end_time (float): End time in seconds.
+
+    Returns:
+        List[NDArray[np.uint8]]: A list of extracted frames.
+    """
     frames = []
-    
+
     while video_capture.isOpened():
         ret, frame = video_capture.read()
         if not ret:
@@ -36,139 +76,136 @@ def extract_frames(video_capture, start_time, end_time):
     return frames
 
 
-def motion_kernel(angle, d, sz=65):
-    d = int(d)
-    sz = int(sz)
-    kern = np.ones((1, d), np.float32)
-    c, s = np.cos(angle), np.sin(angle)
-    A = np.float32([[c, -s, 0], [s, c, 0]])
-    sz2 = sz // 2
-    A[:, 2] = (sz2, sz2) - np.dot(A[:, :2], ((d - 1) * 0.5, 0))
-    kern = cv2.warpAffine(kern, A, (sz, sz), flags=cv2.INTER_CUBIC)
-    return kern
+def kernel_points(frames: List[NDArray[np.uint8]], period: int, block_size: int, win_size: int) -> List[List[Tuple[int, int]]]:
+    """
+    Computes kernel points for given frames.
+
+    Args:
+        frames (List[NDArray[np.uint8]]): List of video frames.
+        period (int): Period to sample frames.
+        block_size (int): Block size for block matching.
+        win_size (int): Size of the search window.
+
+    Returns:
+        List[List[Tuple[int, int]]]: A list of kernel points.
+    """
+    first = frames[0]
+    first = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
+    coords = []
+    for i in range(1, len(frames), period):
+        frame = frames[i]
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        coords.append(find_similar_blocks(first, frame, block_size, win_size))
+        first = frame
+    return coords
 
 
-def find_kernel_by_frames_mean(frames):
-    combined_angle = 0
-    combined_distance = 0
+def mat_array_normalization(array_of_matrix: NDArray[np.uint8]) -> NDArray[np.float32]:
+    """
+    Normalizes an array of matrices by their sum.
 
-    for i in range(1, len(frames)):
-        angle, distance = estimate_motion(frames[i-1], frames[i])
-        combined_angle += angle
-        combined_distance += distance
+    Args:
+        array_of_matrix (NDArray[np.uint8]): An array of matrices to normalize.
 
-    avg_angle = combined_angle / (len(frames) - 1)
-    avg_distance = int(combined_distance / (len(frames) - 1))
-    
-    avg_angle = np.deg2rad(float(avg_angle))
-    kernel = motion_kernel(avg_angle, avg_distance)
+    Returns:
+        NDArray[np.float32]: The normalized matrices.
+    """
+    normalized_matrix = np.empty_like(array_of_matrix, dtype=np.float32)
+    for i, matr in enumerate(array_of_matrix):
+        sum_values = np.sum(matr)
+        if sum_values != 0:
+            normalized_matrix[i] = matr.astype(np.float32) / sum_values
+        else:
+            normalized_matrix[i] = matr.astype(np.float32)
+    return normalized_matrix
 
-    return kernel, avg_angle, avg_distance
+def mat_sum(array_of_matrix: NDArray[np.float32]) -> NDArray[np.float32]:
+    """
+    Computes the sum of matrices in an array.
 
+    Args:
+        array_of_matrix (NDArray[np.float32]): An array of matrices.
 
-def find_kernel_by_frames(frames, kernel_length=3, kernel_width=1):
-    trajectory_x = []
-    trajectory_y = []
-    for i in range(1, len(frames)):
-        image_gray = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY)
-        prev_image_gray = cv2.cvtColor(frames[i-1], cv2.COLOR_BGR2GRAY)
-        flow = cv2.calcOpticalFlowFarneback(prev_image_gray, image_gray, None ,0.1,3,3,31,15,1,cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
-
-        avg_flow_x = np.mean(flow[:, :, 0])
-        avg_flow_y = np.mean(flow[:, :, 1])
-
-        trajectory_x.append(avg_flow_x)
-        trajectory_y.append(avg_flow_y)
-
-    trajectory_image = np.zeros((800, 800), dtype=np.float32)
-
-    trajectory_length = kernel_length
-    trajectory_x_center = int(trajectory_image.shape[1] / 2)
-    trajectory_y_center = int(trajectory_image.shape[0] / 2)
-    
-    prev_x = trajectory_x_center
-    prev_y = trajectory_y_center
-    for i in range(len(trajectory_x)):
-        next_x = int(prev_x + trajectory_x[i] * trajectory_length)
-        next_y = int(prev_y + trajectory_y[i] * trajectory_length)
-
-        l = ((trajectory_x[i] * trajectory_length) ** 2 + (trajectory_y[i] * trajectory_length) ** 2) ** 0.5
-        clr = 1.0 / l
-
-        cv2.line(trajectory_image, (prev_x, prev_y), (next_x, next_y), (clr), kernel_width)
-        prev_x = next_x
-        prev_y = next_y
-
-    cv2.imwrite('kernel_800_l10_w100.png', trajectory_image * 1500.0)
+    Returns:
+        NDArray[np.float32]: The sum of the matrices.
+    """
+    sum_matrix = np.sum(array_of_matrix, axis=0)
+    return sum_matrix
 
 
-def find_kernel_by_frames_corr(frames, kernel_length=1, kernel_width=1):
-    trajectory_x = []
-    trajectory_y = []
-    for i in range(1, len(frames)):
-        image_gray = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY)
-        prev_image_gray = cv2.cvtColor(frames[i-1], cv2.COLOR_BGR2GRAY)
-        cr2d = correlate2d(image_gray[450:550, 450:550], prev_image_gray[450:550, 450:550])
-        coords = np.unravel_index(np.argmax(cr2d, axis=None), cr2d.shape)
+def draw_line(matr: NDArray[np.uint8], x: Tuple[int, int], y: Tuple[int, int], width: int = 1) -> NDArray[np.uint8]:
+    """
+    Draws a line on an image matrix.
 
-        avg_flow_x = coords[1]
-        avg_flow_y = coords[0]
+    Args:
+        matr (NDArray[np.uint8]): The image matrix.
+        x (Tuple[int, int]): Starting coordinate of the line.
+        y (Tuple[int, int]): Ending coordinate of the line.
+        width (int): Width of the line.
 
-        trajectory_x.append(avg_flow_x)
-        trajectory_y.append(avg_flow_y)
-    
-    trajectory_image = np.zeros((frames[0].shape[0], frames[1].shape[1]), dtype=np.float32)
-
-    trajectory_length = kernel_length
-    trajectory_x_center = int(trajectory_image.shape[1] / 4)
-    trajectory_y_center = int(trajectory_image.shape[0] / 2)
-    
-    prev_x = trajectory_x_center
-    prev_y = trajectory_y_center
-    for i in range(len(trajectory_x)):
-        next_x = int(prev_x + trajectory_x[i] / 8 * trajectory_length)
-        next_y = int(prev_y + trajectory_y[i] * trajectory_length)
-
-        l = ((trajectory_x[i] * trajectory_length) ** 2 + (trajectory_y[i] * trajectory_length) ** 2) ** 0.5
-        clr = 1.0 / l
-
-        cv2.line(trajectory_image, (prev_x, prev_y), (next_x, next_y), (clr), kernel_width)
-        prev_x = next_x
-        prev_y = next_y
-    
-    return trajectory_image
+    Returns:
+        NDArray[np.uint8]: The image matrix with the line drawn.
+    """
+    cv2.line(matr, x, y, 255, width, lineType=cv2.LINE_AA)
+    return matr
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--video_path', required=True)
-parser.add_argument('--image_time', required=True)
-parser.add_argument('--end_video_time', required=True)
-parser.add_argument('--exp_time', required=True)
-parser.add_argument('--kernel_width', default=1)
-parser.add_argument('--kernel_length', default=1)
-parser.add_argument('--mode')
+def draw_coordinates(image_array: NDArray[np.uint8], center_x: int, center_y: int, offsets: List[List[Tuple[int, int]]], width: int) -> NDArray[np.uint8]:
+    """
+    Draws lines between coordinates on each image in the array of images.
+
+    Args:
+        image_array (NDArray[np.uint8]): Array of image matrices.
+        center_x (int): Center x-coordinate.
+        center_y (int): Center y-coordinate.
+        offsets (List[List[Tuple[int, int]]]): List of offsets.
+        width (int): Width of the line.
+
+    Returns:
+        NDArray[np.uint8]: The array of images with lines drawn.
+    """
+    for count_iter, shift in enumerate(offsets):
+        x, y = shift[0]
+        end_x = center_x + (x * 2 + 1)
+        end_y = center_y + (y * 2)
+        x1, y1 = (center_x, center_y), (end_x, end_y)
+        image_array[count_iter] = draw_line(image_array[count_iter], x1, y1, width)
+        center_x, center_y = end_x, end_y
+    return image_array
+
+
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--video_path', required=True)
+    parser.add_argument('--image_time', required=True)
+    parser.add_argument('--end_video_time', required=True)
+    parser.add_argument('--exp_time', required=True)
+    parser.add_argument('--kernel_size', required=True)
+    parser.add_argument('--period', type=int, default=4)
+    parser.add_argument('--block_size', type=int, default=100)
+    parser.add_argument('--win_size', type=int, default=150)
+    parser.add_argument('--kernel_width', type=int, default=1)
     args = parser.parse_args()
 
     cap = cv2.VideoCapture(args.video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    duration = frame_count/fps
+    duration = frame_count / fps
 
     image_time = datetime.strptime(args.image_time, "%H:%M:%S.%f")
     video_end_time = datetime.strptime(args.end_video_time, "%H:%M:%S.%f")
     video_start_time = (video_end_time - timedelta(seconds=duration))
 
     start_frame_time = (image_time - video_start_time).total_seconds()
-    end_frame_time = start_frame_time + int(args.exp_time)
+    end_frame_time = start_frame_time + float(args.exp_time)
 
     selected_frames = extract_frames(cap, start_frame_time, end_frame_time)
+    coords = kernel_points(selected_frames, args.period, args.block_size, args.win_size)
 
-    if args.mode == 'mean':
-        kernel, avg_angle, avg_distance = find_kernel_by_frames_mean(selected_frames)
-        print(f'Angle: {avg_angle}')
-        print(f'Distance: {avg_distance}')
-    else:
-        kernel = find_kernel_by_frames_corr(selected_frames, args.kernel_length, args.kernel_width)
+    kernel_size = int(args.kernel_size)
+    array_of_matrix = np.zeros((len(coords), kernel_size, kernel_size), dtype=np.uint8)
+    k = draw_coordinates(array_of_matrix, kernel_size // 2, kernel_size // 2, coords, args.kernel_width)
+    k = mat_array_normalization(k)
+    kernel = mat_sum(k)
 
     cv2.imwrite('kernel.png', kernel * 1500.0)
